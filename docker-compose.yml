@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    container_name: vmg-db
+    restart: always
+    environment:
+      - POSTGRES_DB=vmg
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=password123
+    ports:
+      - "5432:5432"
+    volumes:
+      - vmg_data:/var/lib/postgresql/data
+
+volumes:
+  vmg_data:
