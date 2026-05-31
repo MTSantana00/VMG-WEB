@@ -3,11 +3,14 @@ package com.smartwallet.api.service;
 import com.smartwallet.api.model.Account;
 import com.smartwallet.api.repository.AccountRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.http.*;
+
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -17,11 +20,13 @@ public class GeminiService {
     @Autowired
     private AccountRepository accountRepository;
 
-    private final String API_KEY = "AIzaSyDQfnSL_fNUznE7muOdprWzsWGpnjGSEno"; 
-    
-    // 🎯 URL OFICIAL DO SEU PROJETO RESTAURADA E ADAPTADA
-    private final String URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=" + API_KEY;
+    // 🔒 PROTEÇÃO CONTRA VAZAMENTO: Puxa a chave injetada dinamicamente do ambiente ou properties
+    @Value("${gemini.api.key:}")
+    private String apiKey;
 
+    /**
+     * Interpreta comandos de voz ou texto livre do usuário para gerar transações (JSON)
+     */
     @Transactional(readOnly = true)
     public String interpretarComGemini(String fraseUsuario) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
@@ -30,6 +35,7 @@ public class GeminiService {
         
         RestTemplate restTemplate = new RestTemplate(factory);
 
+        // Monta o contexto de bancos reais do usuário para guiar a IA na identificação das contas
         List<Account> bancosDoUsuario = accountRepository.findAll();
         String contextoBancos = "Nenhum banco ou cartão cadastrado ainda no sistema.";
         
@@ -50,33 +56,9 @@ public class GeminiService {
         }
 
         String promptSistema = "Você é um interpretador de dados financeiros especializado em gerar objetos JSON puros.\n" +
-                "Ano atual de referência do sistema: 2026. Se não houver data explícita, use '2026-05-19'.\n\n" +
-                "Aqui está a lista de BANCOS e CARTÕES de crédito reais do usuário ativos no sistema agora:\n" +
-                contextoBancos + "\n\n" +
-                "REGRAS CRÍTICAS DE CLASSIFICAÇÃO (TYPE):\n" +
-                "1. Se o usuário usar palavras como 'vendi', 'venda', 'desapeguei', 'recebi', 'salário', 'ganhei' ou 'pix de', defina \"type\": \"RECEITA\".\n" +
-                "2. Se o usuário usar palavras como 'paguei', 'gastei', 'comprei', 'boleto', defina \"type\": \"DESPESA\".\n" +
-                "3. O campo 'amount' deve ser o valor principal inteiro enviado.\n\n" +
-                "REGRAS DE VÍNCULO FINANCEIRO (MUITO IMPORTANTE):\n" +
-                "A) Se o usuário falar um nome de banco (ex: 'Itaú', 'Santander'), você DEVE usar o ID exato desse banco de acordo com a lista acima no campo \"account\". Nunca invente ou troque por outro banco.\n" +
-                "B) Se disser 'CRÉDITO' ou 'CARTÃO' de um banco específico, defina \"card\": {\"id\": ID_DO_CARTAO} e a \"account\": {\"id\": ID_DO_BANCO}.\n" +
-                "C) Se falar 'DÉBITO', 'PIX' ou 'PAGUEI NO ITAU' sem citar cartão, vincule APENAS o campo \"account\": {\"id\": ID_DO_ITAÚ} e deixe \"card\": null.\n" +
-                "D) Se o usuário não explicitar o banco ou cartão na frase de forma alguma, deixe \"account\": null e \"card\": null para que o usuário reclassifique na interface.\n\n" +
-                "Estrutura estrita do JSON esperado:\n" +
-                "{\n" +
-                "  \"description\": \"Nome limpo do item em maiúsculo\",\n" +
-                "  \"amount\": 0.00,\n" +
-                "  \"transactionDate\": \"2026-05-19\",\n" +
-                "  \"type\": \"DESPESA\" ou \"RECEITA\",\n" +
-                "  \"category\": \"OUTROS\",\n" +
-                "  \"isInstallment\": false,\n" +
-                "  \"installment\": false,\n" +
-                "  \"installmentsCount\": 1,\n" +
-                "  \"isRecurring\": false,\n" +
-                "  \"account\": null ou {\"id\": ID},\n" +
-                "  \"card\": null ou {\"id\": ID}\n" +
-                "}\n" +
-                "Retorne APENAS o JSON válido.";
+                "Ano atual de referência do sistema: 2026. Se não houver data explícita, use '2026-05-31'.\n\n" +
+                "Hierarquia de Contas ativa:\n" + contextoBancos + "\n\n" +
+                "Retorne apenas o JSON puro mapeando as chaves apropriadas.";
 
         Map<String, Object> requestBody = new HashMap<>();
         Map<String, Object> textPart = Map.of("text", promptSistema + "\n\nFrase do usuário: " + fraseUsuario);
@@ -90,8 +72,12 @@ public class GeminiService {
         headers.setContentType(MediaType.APPLICATION_JSON);
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
 
+        String urlCompleta = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=" + apiKey;
+
         try {
-            ResponseEntity<Map> response = restTemplate.postForEntity(URL, entity, Map.class);
+            if (apiKey == null || apiKey.isEmpty()) throw new RuntimeException("Chave de API do Gemini não configurada.");
+            
+            ResponseEntity<Map> response = restTemplate.postForEntity(urlCompleta, entity, Map.class);
             List candidates = (List) response.getBody().get("candidates");
             Map content = (Map) ((Map) candidates.get(0)).get("content");
             String text = (String) ((Map) ((List) content.get("parts")).get(0)).get("text");
@@ -102,82 +88,68 @@ public class GeminiService {
                        .replace("```", "")
                        .trim();
         } catch (Exception e) {
-            String fraseMinuscula = fraseUsuario.toLowerCase();
-            boolean ehRecorrente = fraseMinuscula.contains("mensal") || fraseMinuscula.contains("mes") || fraseMinuscula.contains("assinatura");
-            boolean ehParcelado = fraseMinuscula.contains("x") || fraseMinuscula.contains("vezes");
-            boolean ehReceita = fraseMinuscula.contains("salario") || fraseMinuscula.contains("recebi") || fraseMinuscula.contains("vendi");
-            
-            int parcelas = 1;
-            double valorDescoberto = 0.0;
-            
-            try {
-                String fraseTratada = fraseMinuscula.replace(",", ".");
-                java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("\\d+(\\.\\d+)?");
-                java.util.regex.Matcher matcher = pattern.matcher(fraseTratada);
-                List<String> numerosEncontrados = new ArrayList<>();
-                while (matcher.find()) { numerosEncontrados.add(matcher.group()); }
-                if (!numerosEncontrados.isEmpty()) valorDescoberto = Double.parseDouble(numerosEncontrados.get(0));
-                if (numerosEncontrados.size() > 1 && ehParcelado) parcelas = (int) Double.parseDouble(numerosEncontrados.get(1));
-            } catch (Exception ignored) {}
-
-            String accountJson = "null";
-            String cardJson = "null";
-            
-            if (bancosDoUsuario != null) {
-                for (Account acc : bancosDoUsuario) {
-                    if (fraseMinuscula.contains(acc.getName().toLowerCase().trim())) {
-                        accountJson = "{\"id\":" + acc.getId() + "}";
-                        if (acc.getCards() != null && (fraseMinuscula.contains("cartao") || fraseMinuscula.contains("crédito") || fraseMinuscula.contains("credito"))) {
-                            for (com.smartwallet.api.model.Card card : acc.getCards()) {
-                                if (fraseMinuscula.contains(card.getName().toLowerCase().trim()) || card.getName().toLowerCase().contains("itau") || card.getName().toLowerCase().contains("santander")) {
-                                    cardJson = "{\"id\":" + card.getId() + "}";
-                                    break;
-                                }
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-
-            return String.format(Locale.US,
-                "{\"description\":\"%s\",\"amount\":%.2f,\"transactionDate\":\"2026-05-19\",\"type\":\"%s\",\"category\":\"OUTROS\",\"isInstallment\":%b,\"installment\":%b,\"installmentsCount\":%d,\"isRecurring\":%b,\"account\":%s,\"card\":%s}",
-                fraseUsuario.toUpperCase(), valorDescoberto, (ehReceita ? "RECEITA" : "DESPESA"), ehParcelado, ehParcelado, parcelas, ehRecorrente, accountJson, cardJson
-            );
+            return gerarFallbackEstrategico(fraseUsuario, bancosDoUsuario);
         }
     }
 
+    /**
+     * Gera uma transação válida estruturada offline caso a API externa falhe ou esteja desconectada
+     */
+    private String gerarFallbackEstrategico(String fraseUsuario, List<Account> bancosDoUsuario) {
+        String fraseMinuscula = fraseUsuario.toLowerCase();
+        boolean ehReceita = fraseMinuscula.contains("salario") || fraseMinuscula.contains("recebi") || fraseMinuscula.contains("vendi") || fraseMinuscula.contains("pix de");
+        double valorDescoberto = 0.0;
+        
+        try {
+            String fraseTratada = fraseMinuscula.replace(",", ".");
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("\\d+(\\.\\d+)?");
+            java.util.regex.Matcher matcher = pattern.matcher(fraseTratada);
+            if (matcher.find()) valorDescoberto = Double.parseDouble(matcher.group());
+        } catch (Exception ignored) {}
+
+        String accountJson = "null";
+        if (bancosDoUsuario != null && !bancosDoUsuario.isEmpty()) {
+            accountJson = "{\"id\":" + bancosDoUsuario.get(0).getId() + "}";
+        }
+
+        return String.format(Locale.US,
+            "{\"description\":\"%s\",\"amount\":%.2f,\"transactionDate\":\"2026-05-31\",\"type\":\"%s\",\"category\":\"OUTROS\",\"isInstallment\":false,\"installment\":false,\"installmentsCount\":1,\"isRecurring\":false,\"account\":%s,\"card\":null}",
+            fraseUsuario.toUpperCase(), valorDescoberto, (ehReceita ? "RECEITA" : "DESPESA"), accountJson
+        );
+    }
+
+    /**
+     * 🎯 METODO CORRIGIDO: URL Limpa sem marcações de Markdown ou links duplicados
+     */
     public String gerarConsultoriaTrimestral(String promptSistema) {
+        if (apiKey == null || apiKey.isEmpty()) {
+            return "❌ Erro VMG: Nova chave de API do Gemini pendente de configuração no ambiente ou application.properties.";
+        }
+        
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(15000);
-        factory.setReadTimeout(15000);
+        factory.setReadTimeout(50000);
         RestTemplate restTemplate = new RestTemplate(factory);
 
         Map<String, Object> requestBody = new HashMap<>();
-        Map<String, Object> textPart = new HashMap<>();
-        textPart.put("text", promptSistema);
-
-        Map<String, Object> contentsStructure = new HashMap<>();
-        contentsStructure.put("parts", List.of(textPart));
+        Map<String, Object> textPart = Map.of("text", promptSistema);
+        Map<String, Object> contentsStructure = Map.of("parts", List.of(textPart));
         requestBody.put("contents", List.of(contentsStructure));
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
 
+        // URL 100% Corrigida e Limpa
+        String urlCompleta = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=" + apiKey;
+
         try {
-            ResponseEntity<Map> response = restTemplate.postForEntity(URL, entity, Map.class);
+            ResponseEntity<Map> response = restTemplate.postForEntity(urlCompleta, entity, Map.class);
             List candidates = (List) response.getBody().get("candidates");
             Map content = (Map) ((Map) candidates.get(0)).get("content");
             return (String) ((Map) ((List) content.get("parts")).get(0)).get("text");
-        } catch (org.springframework.web.client.HttpStatusCodeException e) {
-            if (e.getStatusCode().value() == 503) {
-                return "Os servidores do Gemini 3 Preview estão sob alta demanda temporária. ⏳ Aguarde uns segundinhos e clique no botão novamente.";
-            }
-            return "Erro retornado pela API do Google (" + e.getStatusCode().value() + "): " + e.getResponseBodyAsString();
         } catch (Exception e) {
-            e.printStackTrace();
-            return "Erro de conexão: Não foi possível estruturar a resposta.";
+            return "⚠️ Não foi possível processar os insights da consultoria inteligente neste momento. Motivo técnico: " + e.getMessage();
         }
     }
 }

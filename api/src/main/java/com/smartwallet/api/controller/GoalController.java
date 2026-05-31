@@ -3,13 +3,16 @@ package com.smartwallet.api.controller;
 import com.smartwallet.api.model.Goal;
 import com.smartwallet.api.model.GoalHistory;
 import com.smartwallet.api.model.Account;
+import com.smartwallet.api.model.Transaction;
 import com.smartwallet.api.repository.GoalRepository;
 import com.smartwallet.api.repository.GoalHistoryRepository;
 import com.smartwallet.api.repository.AccountRepository;
+import com.smartwallet.api.repository.TransactionRepository;
 import com.smartwallet.api.service.GeminiService;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -31,6 +34,10 @@ public class GoalController {
     @Autowired
     private AccountRepository accountRepository;
 
+    // 🎯 INJETADO: Repositório para espelhar as movimentações do cofre no extrato geral
+    @Autowired
+    private TransactionRepository transactionRepository;
+
     @Autowired
     private GeminiService geminiService;
 
@@ -48,26 +55,24 @@ public class GoalController {
         return goalRepository.save(goal);
     }
 
-    // 🎯 NOVO ENDPOINT: Devolve o extrato interno exclusivo desse sonho
     @GetMapping("/{id}/history")
     public List<GoalHistory> obterHistoricoSonho(@PathVariable Long id) {
         return goalHistoryRepository.findByGoalIdOrderByDateDesc(id);
     }
 
-    // 🎯 ATUALIZADO: Guardar dinheiro deduzindo do banco físico + histórico + IA do Gemini
+    // 🎯 ATUALIZADO COM ESPELHAMENTO DE EXTRATO AUTOMÁTICO
     @PostMapping("/{id}/guardar")
+    @Transactional
     public ResponseEntity<?> guardarDinheiro(@PathVariable Long id, @RequestBody Map<String, Object> payload) {
         try {
             Goal goal = goalRepository.findById(id).orElseThrow(() -> new RuntimeException("Sonho não encontrado"));
             
-            // Tratamento dinâmico para evitar problemas de parse de tipos numéricos
             Long accountId = Long.valueOf(payload.get("accountId").toString());
             BigDecimal valor = new BigDecimal(payload.get("amount").toString());
             
             Account conta = accountRepository.findById(accountId)
                     .orElseThrow(() -> new RuntimeException("Banco selecionado não encontrado"));
 
-            // Validação de segurança: precisa ter saldo real na conta bancária escolhida
             if (conta.getBalance().compareTo(valor) < 0) {
                 return ResponseEntity.badRequest().body("{\"error\":\"Saldo insuficiente no banco selecionado!\"}");
             }
@@ -79,7 +84,7 @@ public class GoalController {
             // 2. Incrementa o progresso do sonho
             goal.setCurrentAmount(goal.getCurrentAmount().add(valor));
 
-            // 3. Salva o registro no histórico exclusivo do sonho (Sem gerar Transaction poluidora)
+            // 3. Salva o registro no histórico exclusivo do sonho
             GoalHistory log = new GoalHistory();
             log.setGoal(goal);
             log.setType("DEPOSITO");
@@ -88,7 +93,20 @@ public class GoalController {
             log.setBankName(conta.getName());
             goalHistoryRepository.save(log);
 
-            // 4. Aciona a IA do Gemini para gerar o conselho motivacional
+            // 4. 🚀 ADICIONADO: Gera a transação de débito correspondente para refletir no extrato principal
+            Transaction t = new Transaction();
+            t.setDescription("APLICAÇÃO: " + goal.getEmoji() + " " + goal.getName());
+            t.setAmount(valor);
+            t.setTransactionDate(LocalDate.now());
+            t.setType("DESPESA"); // Classificado como saída/despesa do saldo livre da conta corrente
+            t.setCategory("INVESTIMENTOS");
+            t.setAccount(conta);
+            t.setCard(null); // Movimentação puramente em conta corrente
+            t.setInstallment(false);
+            t.setRecurring(false);
+            transactionRepository.save(t);
+
+            // 5. Aciona a IA do Gemini para gerar o conselho motivacional
             double porcentagem = (goal.getCurrentAmount().doubleValue() / goal.getTargetAmount().doubleValue()) * 100;
             String promptIA = String.format(
                 "O usuário está em %.1f%% da meta do sonho '%s %s' (Alvo: R$%.2f, Guardado: R$%.2f). A data limite é %s. Dê uma dica motivacional de finanças de EXATAMENTE 1 linha para ele.",
@@ -114,8 +132,9 @@ public class GoalController {
         }
     }
 
-    // 🎯 ATUALIZADO: Resgatar dinheiro e devolver direto para o banco físico real escolhido
+    // 🎯 ATUALIZADO COM ESPELHAMENTO DE EXTRATO AUTOMÁTICO
     @PostMapping("/{id}/resgatar")
+    @Transactional
     public ResponseEntity<?> resgatarDinheiro(@PathVariable Long id, @RequestBody Map<String, Object> payload) {
         try {
             Goal goal = goalRepository.findById(id).orElseThrow(() -> new RuntimeException("Sonho não encontrado"));
@@ -126,7 +145,6 @@ public class GoalController {
             Account conta = accountRepository.findById(accountId)
                     .orElseThrow(() -> new RuntimeException("Banco selecionado não encontrado"));
 
-            // Validação de segurança: não dá para resgatar mais do que o cofre tem
             if (goal.getCurrentAmount().compareTo(valor) < 0) {
                 return ResponseEntity.badRequest().body("{\"error\":\"Saldo insuficiente no cofre do sonho!\"}");
             }
@@ -146,6 +164,19 @@ public class GoalController {
             log.setDate(LocalDate.now());
             log.setBankName(conta.getName());
             goalHistoryRepository.save(log);
+
+            // 4. 🚀 ADICIONADO: Gera a transação de crédito correspondente para refletir no extrato principal
+            Transaction t = new Transaction();
+            t.setDescription("RESGATE: " + goal.getEmoji() + " " + goal.getName());
+            t.setAmount(valor);
+            t.setTransactionDate(LocalDate.now());
+            t.setType("RECEITA"); // Classificado como entrada/receita no saldo livre da conta corrente
+            t.setCategory("INVESTIMENTOS");
+            t.setAccount(conta);
+            t.setCard(null);
+            t.setInstallment(false);
+            t.setRecurring(false);
+            transactionRepository.save(t);
 
             goalRepository.save(goal);
             return ResponseEntity.ok(goal);

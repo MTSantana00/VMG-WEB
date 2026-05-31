@@ -1,26 +1,57 @@
 package com.smartwallet.api.model;
 
 import jakarta.persistence.*;
-import lombok.Data;
 import java.math.BigDecimal;
-import java.util.ArrayList;
 import java.util.List;
+import com.fasterxml.jackson.annotation.JsonManagedReference;
 
 @Entity
 @Table(name = "accounts")
-@Data
 public class Account {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    private String name; // Ex: Nubank, Inter, Itaú
-    private String type; // CORRENTE, POUPANCA
-    private BigDecimal balance; // Saldo da Conta Corrente
+    private String name;
+    private BigDecimal balance;
 
-    // CORREÇÃO: Carregamento EAGER (imediato) + JoinColumn para garantir que a lista venha preenchida no JSON
-    @OneToMany(fetch = FetchType.EAGER, cascade = CascadeType.ALL, orphanRemoval = true)
-    @JoinColumn(name = "account_id") // Cria a chave estrangeira na tabela de cartões apontando para a conta
-    private List<Card> cards = new ArrayList<>(); // Inicializa com ArrayList para evitar NullPointerException nas funções do Controller
+    @OneToMany(mappedBy = "account", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    @JsonManagedReference
+    private List<Card> cards;
+
+    // ==========================================
+    // GETTERS E SETTERS EXPLICITOS (ANTI-ERRO)
+    // ==========================================
+    public Long getId() {
+        return id;
+    }
+
+    public void setId(Long id) {
+        this.id = id;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public BigDecimal getBalance() {
+        return balance;
+    }
+
+    public void setBalance(BigDecimal balance) {
+        this.balance = balance;
+    }
+
+    public List<Card> getCards() {
+        return cards;
+    }
+
+    public void setCards(List<Card> cards) {
+        this.cards = cards;
+    }
 }

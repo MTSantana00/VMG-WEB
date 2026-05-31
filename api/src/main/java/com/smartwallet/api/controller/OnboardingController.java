@@ -7,9 +7,11 @@ import com.smartwallet.api.model.Goal;
 import com.smartwallet.api.repository.AccountRepository;
 import com.smartwallet.api.repository.TransactionRepository;
 import com.smartwallet.api.repository.GoalRepository;
+import com.smartwallet.api.service.GeminiService;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -33,12 +35,20 @@ public class OnboardingController {
     @Autowired
     private GoalRepository goalRepository;
 
-    private boolean onboardingCompletedStatus = false;
+    private boolean manualOverrideStatus = false;
     private String savedUserName = "Matheus";
 
+    // 🎯 CORREÇÃO CRÍTICA ANTI-DUPLICIDADE: Verifica dinamicamente no banco real se já existem dados salvos
     @GetMapping("/status")
     public ResponseEntity<?> getStatus() {
-        return ResponseEntity.ok(Map.of("onboardingCompleted", onboardingCompletedStatus));
+        long totalContas = accountRepository.count();
+        
+        // Se já existem contas gravadas no banco físico, o onboarding COMPLETOU (true) e não deve reaparecer
+        if (totalContas > 0 || manualOverrideStatus) {
+            return ResponseEntity.ok(Map.of("onboardingCompleted", true));
+        }
+        
+        return ResponseEntity.ok(Map.of("onboardingCompleted", false));
     }
 
     @GetMapping("/profile")
@@ -47,8 +57,14 @@ public class OnboardingController {
     }
 
     @PostMapping("/setup")
+    @Transactional
     public ResponseEntity<?> setupInicial(@RequestBody OnboardingSetupRequest request) {
         try {
+            // Trava de segurança: Se o usuário de alguma forma tentar forçar a rota de setup já tendo dados, bloqueia
+            if (accountRepository.count() > 0) {
+                return ResponseEntity.badRequest().body(Map.of("error", "O ecossistema VMG já está configurado. Operação abortada para evitar duplicidade."));
+            }
+
             if (request.getName() != null && !request.getName().trim().isEmpty()) {
                 this.savedUserName = request.getName().trim();
             }
@@ -96,7 +112,7 @@ public class OnboardingController {
                 contasSalvas.add(contaDoSalario);
             }
 
-            // LANÇAMENTO DE RECEITA RECORRENTE AUTOMÁTICA
+            // LANÇAMENTO DE RECEITA RECORRENTE AUTOMÁTICA (Apenas na inicialização do sistema)
             if (request.getSalary() != null && request.getSalary().compareTo(BigDecimal.ZERO) > 0) {
                 for (int i = 0; i <= 3; i++) {
                     Transaction lancamentoSalario = new Transaction();
@@ -116,7 +132,7 @@ public class OnboardingController {
                 }
             }
 
-            // 2. Processa as Despesas
+            // 2. Processa as Despesas Iniciais
             if (request.getExpenses() != null && !request.getExpenses().isEmpty()) {
                 for (OnboardingSetupRequest.ExpenseSetupDTO expenseDTO : request.getExpenses()) {
                     Account contaDestinoGasto = null;
@@ -189,8 +205,10 @@ public class OnboardingController {
                 }
             }
 
+            this.manualOverrideStatus = true;
+
             return ResponseEntity.ok(Map.of(
-                "message", "Configurações parciais aplicadas com sucesso!",
+                "message", "Configurações aplicadas e gravadas!",
                 "status", "SUCCESS"
             ));
 
@@ -199,12 +217,11 @@ public class OnboardingController {
         }
     }
 
-    // 🎯 CORREÇÃO DO CRASH: Endpoint exato de conclusão que o Next.js estava chamando e quebrando
     @PostMapping("/complete")
     public ResponseEntity<?> completeOnboarding() {
-        this.onboardingCompletedStatus = true;
+        this.manualOverrideStatus = true;
         return ResponseEntity.ok(Map.of(
-            "message", "Onboarding finalizado!",
+            "message", "Onboarding finalizado com sucesso!",
             "onboardingCompleted", true
         ));
     }
